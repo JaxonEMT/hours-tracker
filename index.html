@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Hours" />
+  <meta name="theme-color" content="#0d0d0f" />
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <title>Hours Tracker</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+    body { background: #0d0d0f; overscroll-behavior: none; }
+    input[type="date"], input[type="time"] { color-scheme: dark; }
+    ::-webkit-scrollbar { display: none; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect } = React;
+
+const JOBS = [
+  { id: "acadian", label: "Acadian Ambulance", color: "#f97316", emoji: "🚑", rate: 17.67 },
+  { id: "museum", label: "Bayou Country Children's Museum", color: "#22d3ee", emoji: "🐊", rate: 10.17 },
+  { id: "camp", label: "Summer Camp", color: "#a78bfa", emoji: "⛺", rate: 14.00 },
+];
+
+const STORAGE_KEY = "jax_hours_tracker_v1";
+
+function loadData() {
+  try { const raw = localStorage.getItem(STORAGE_KEY); return raw ? JSON.parse(raw) : []; }
+  catch { return []; }
+}
+function saveData(shifts) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(shifts)); } catch {}
+}
+function calcHours(start, end) {
+  if (!start || !end) return 0;
+  const [sh, sm] = start.split(":").map(Number);
+  const [eh, em] = end.split(":").map(Number);
+  let mins = (eh * 60 + em) - (sh * 60 + sm);
+  if (mins < 0) mins += 1440;
+  return +(mins / 60).toFixed(2);
+}
+function formatCurrency(n) {
+  return "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+function getMonthKey(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+}
+function monthLabel(key) {
+  const [y, m] = key.split("-");
+  return new Date(y, m - 1, 1).toLocaleString("default", { month: "long", year: "numeric" });
+}
+const getRate = (jobId) => String(JOBS.find(j => j.id === jobId)?.rate?.toFixed(2) ?? "");
+const blankForm = { jobId: "acadian", date: "", startTime: "", endTime: "", rate: getRate("acadian"), notes: "" };
+
+function App() {
+  const [shifts, setShifts] = useState(loadData);
+  const [form, setForm] = useState(blankForm);
+  const [formError, setFormError] = useState("");
+  const [activeMonth, setActiveMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [view, setView] = useState("log");
+  const [editId, setEditId] = useState(null);
+
+  useEffect(() => { saveData(shifts); }, [shifts]);
+
+  const months = [...new Set(shifts.map(s => getMonthKey(s.date)))].sort().reverse();
+  const allMonths = [...new Set([activeMonth, ...months])].sort().reverse();
+  const monthShifts = shifts.filter(s => getMonthKey(s.date) === activeMonth).sort((a, b) => a.date < b.date ? -1 : 1);
+  const jobTotals = JOBS.map(job => {
+    const js = monthShifts.filter(s => s.jobId === job.id);
+    const hours = js.reduce((acc, s) => acc + calcHours(s.startTime, s.endTime), 0);
+    const pay = js.reduce((acc, s) => acc + calcHours(s.startTime, s.endTime) * Number(s.rate || 0), 0);
+    return { ...job, hours, pay, count: js.length };
+  });
+  const totalHours = jobTotals.reduce((a, j) => a + j.hours, 0);
+  const totalPay = jobTotals.reduce((a, j) => a + j.pay, 0);
+
+  function handleField(k, v) {
+    if (k === "jobId") { setForm(f => ({ ...f, jobId: v, rate: getRate(v) })); }
+    else { setForm(f => ({ ...f, [k]: v })); }
+    setFormError("");
+  }
+  function handleSubmit() {
+    if (!form.date) return setFormError("Date is required.");
+    if (!form.startTime || !form.endTime) return setFormError("Start and end time are required.");
+    const hours = calcHours(form.startTime, form.endTime);
+    if (hours <= 0) return setFormError("End time must be after start time.");
+    if (editId) {
+      setShifts(prev => prev.map(s => s.id === editId ? { ...form, id: editId } : s));
+      setEditId(null);
+    } else {
+      setShifts(prev => [...prev, { ...form, id: Date.now().toString() }]);
+    }
+    setActiveMonth(getMonthKey(form.date));
+    setForm(blankForm);
+    setView("log");
+  }
+  function handleEdit(shift) {
+    setForm({ jobId: shift.jobId, date: shift.date, startTime: shift.startTime, endTime: shift.endTime, rate: shift.rate, notes: shift.notes || "" });
+    setEditId(shift.id);
+    setView("add");
+    window.scrollTo(0, 0);
+  }
+  function handleDelete(id) { setShifts(prev => prev.filter(s => s.id !== id)); }
+  function cancelEdit() { setEditId(null); setForm(blankForm); setFormError(""); setView("log"); }
+  const job = (id) => JOBS.find(j => j.id === id);
+  function formatDate(d) {
+    if (!d) return "";
+    return new Date(d + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+  }
+
+  const s = {
+    app: { background: "#0d0d0f", minHeight: "100vh", color: "#e8e8e8", fontFamily: "'Inter', 'SF Pro Display', system-ui, sans-serif", padding: "0 0 80px" },
+    header: { background: "#111114", borderBottom: "1px solid #222228", padding: "18px 20px 14px", position: "sticky", top: 0, zIndex: 10 },
+    headerTop: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 },
+    title: { fontSize: 20, fontWeight: 700, letterSpacing: "-0.3px", color: "#f0f0f0" },
+    subtitle: { fontSize: 12, color: "#666", marginTop: 2 },
+    tab: (active) => ({ padding: "7px 16px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 600, background: active ? "#1e1e26" : "transparent", color: active ? "#f0f0f0" : "#666" }),
+    monthRow: { display: "flex", gap: 6, overflowX: "auto", padding: "10px 20px 0", scrollbarWidth: "none" },
+    monthChip: (active) => ({ padding: "5px 13px", borderRadius: 20, border: `1px solid ${active ? "#444" : "#222"}`, cursor: "pointer", fontSize: 12, fontWeight: 600, whiteSpace: "nowrap", background: active ? "#1e1e26" : "transparent", color: active ? "#f0f0f0" : "#555", flexShrink: 0 }),
+    section: { padding: "16px 20px 0" },
+    summaryGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 },
+    bigCard: { background: "#111114", border: "1px solid #222228", borderRadius: 12, padding: "14px 16px" },
+    bigLabel: { fontSize: 11, color: "#555", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 4 },
+    bigValue: { fontSize: 26, fontWeight: 700, color: "#f0f0f0", letterSpacing: "-0.5px" },
+    jobCard: (color) => ({ background: "#111114", border: `1px solid ${color}22`, borderLeft: `3px solid ${color}`, borderRadius: 10, padding: "12px 14px", marginBottom: 8 }),
+    jobStats: { display: "flex", gap: 16, marginTop: 6 },
+    jobStat: { fontSize: 12, color: "#666" },
+    jobStatVal: { color: "#ddd", fontWeight: 600 },
+    shiftCard: { background: "#111114", border: "1px solid #1e1e26", borderRadius: 10, padding: "12px 14px", marginBottom: 8, display: "flex", alignItems: "flex-start", justifyContent: "space-between" },
+    shiftLeft: { flex: 1 },
+    shiftDate: { fontSize: 11, color: "#555", marginBottom: 3 },
+    shiftJob: (color) => ({ display: "inline-flex", alignItems: "center", fontSize: 12, fontWeight: 700, color, marginBottom: 4 }),
+    shiftTime: { fontSize: 13, color: "#ccc", marginBottom: 2 },
+    shiftEarned: { fontSize: 12, color: "#888" },
+    shiftNotes: { fontSize: 11, color: "#555", marginTop: 4, fontStyle: "italic" },
+    shiftActions: { display: "flex", flexDirection: "column", gap: 6, marginLeft: 10 },
+    iconBtn: (color) => ({ background: "none", border: `1px solid ${color}33`, borderRadius: 6, padding: "4px 8px", cursor: "pointer", color, fontSize: 11, fontWeight: 600 }),
+    formCard: { background: "#111114", border: "1px solid #222228", borderRadius: 14, padding: "18px" },
+    label: { fontSize: 11, color: "#666", textTransform: "uppercase", letterSpacing: "0.7px", marginBottom: 5, display: "block" },
+    input: { width: "100%", background: "#0d0d0f", border: "1px solid #2a2a32", borderRadius: 8, padding: "10px 12px", color: "#f0f0f0", fontSize: 14, outline: "none", boxSizing: "border-box" },
+    select: { width: "100%", background: "#0d0d0f", border: "1px solid #2a2a32", borderRadius: 8, padding: "10px 12px", color: "#f0f0f0", fontSize: 14, outline: "none", boxSizing: "border-box", appearance: "none" },
+    fieldRow: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 },
+    fieldGroup: { marginBottom: 14 },
+    btn: { width: "100%", padding: "12px", borderRadius: 10, border: "none", cursor: "pointer", fontSize: 15, fontWeight: 700, background: "#f97316", color: "#fff" },
+    cancelBtn: { width: "100%", padding: "11px", borderRadius: 10, border: "1px solid #2a2a32", cursor: "pointer", fontSize: 14, fontWeight: 600, background: "transparent", color: "#666", marginTop: 8 },
+    error: { color: "#f87171", fontSize: 12, marginBottom: 12 },
+    empty: { textAlign: "center", color: "#444", fontSize: 13, padding: "40px 0" },
+    addBtn: { position: "fixed", bottom: 24, right: 20, background: "#f97316", color: "#fff", border: "none", borderRadius: 50, width: 52, height: 52, fontSize: 26, cursor: "pointer", boxShadow: "0 4px 20px #f9731644", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 20 },
+  };
+
+  return (
+    <div style={s.app}>
+      <div style={s.header}>
+        <div style={s.headerTop}>
+          <div>
+            <div style={s.title}>Hours Tracker</div>
+            <div style={s.subtitle}>3 jobs · {monthLabel(activeMonth)}</div>
+          </div>
+          <button style={s.tab(true)} onClick={() => setView(view === "log" ? "summary" : "log")}>
+            {view === "summary" ? "📋 Log" : "📊 Summary"}
+          </button>
+        </div>
+        <div style={s.monthRow}>
+          {allMonths.map(m => (
+            <button key={m} style={s.monthChip(m === activeMonth)} onClick={() => setActiveMonth(m)}>
+              {monthLabel(m)}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {view === "add" && (
+        <div style={s.section}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#888", marginBottom: 12, textTransform: "uppercase", letterSpacing: "0.8px" }}>{editId ? "Edit Shift" : "Log a Shift"}</div>
+          <div style={s.formCard}>
+            {formError && <div style={s.error}>⚠️ {formError}</div>}
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Job</label>
+              <select style={s.select} value={form.jobId} onChange={e => handleField("jobId", e.target.value)}>
+                {JOBS.map(j => <option key={j.id} value={j.id}>{j.emoji} {j.label}</option>)}
+              </select>
+            </div>
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Date</label>
+              <input type="date" style={s.input} value={form.date} onChange={e => handleField("date", e.target.value)} />
+            </div>
+            <div style={{ ...s.fieldRow, ...s.fieldGroup }}>
+              <div>
+                <label style={s.label}>Start Time</label>
+                <input type="time" style={s.input} value={form.startTime} onChange={e => handleField("startTime", e.target.value)} />
+              </div>
+              <div>
+                <label style={s.label}>End Time</label>
+                <input type="time" style={s.input} value={form.endTime} onChange={e => handleField("endTime", e.target.value)} />
+              </div>
+            </div>
+            {form.startTime && form.endTime && calcHours(form.startTime, form.endTime) > 0 && (
+              <div style={{ fontSize: 12, color: "#f97316", marginBottom: 12, marginTop: -6 }}>
+                ⏱ {calcHours(form.startTime, form.endTime).toFixed(2)} hrs · {formatCurrency(calcHours(form.startTime, form.endTime) * Number(form.rate))} est.
+              </div>
+            )}
+            <div style={s.fieldGroup}>
+              <label style={s.label}>Notes (optional)</label>
+              <input type="text" style={s.input} value={form.notes} onChange={e => handleField("notes", e.target.value)} placeholder="e.g. Night shift, event, overtime" />
+            </div>
+            <button style={s.btn} onClick={handleSubmit}>{editId ? "Save Changes" : "Add Shift"}</button>
+            <button style={s.cancelBtn} onClick={cancelEdit}>Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {view === "summary" && (
+        <div style={s.section}>
+          <div style={s.summaryGrid}>
+            <div style={s.bigCard}>
+              <div style={s.bigLabel}>Total Hours</div>
+              <div style={s.bigValue}>{totalHours.toFixed(1)}</div>
+            </div>
+            <div style={s.bigCard}>
+              <div style={s.bigLabel}>Est. Earnings</div>
+              <div style={{ ...s.bigValue, color: "#4ade80" }}>{formatCurrency(totalPay)}</div>
+            </div>
+          </div>
+          {jobTotals.map(j => (
+            <div key={j.id} style={s.jobCard(j.color)}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 18 }}>{j.emoji}</span>
+                <span style={{ fontSize: 12, color: "#555" }}>{j.count} shift{j.count !== 1 ? "s" : ""}</span>
+              </div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: j.color, margin: "4px 0 6px" }}>{j.label}</div>
+              <div style={s.jobStats}>
+                <div style={s.jobStat}><span style={s.jobStatVal}>{j.hours.toFixed(1)}</span> hrs</div>
+                <div style={s.jobStat}><span style={s.jobStatVal}>{formatCurrency(j.pay)}</span> earned</div>
+              </div>
+            </div>
+          ))}
+          {monthShifts.length === 0 && <div style={s.empty}>No shifts logged for {monthLabel(activeMonth)}.</div>}
+        </div>
+      )}
+
+      {view === "log" && (
+        <div style={s.section}>
+          {monthShifts.length === 0 ? (
+            <div style={s.empty}>No shifts yet for {monthLabel(activeMonth)}.<br /><span style={{ color: "#f97316" }}>Tap + to add one.</span></div>
+          ) : (
+            monthShifts.map(shift => {
+              const j = job(shift.jobId);
+              const hrs = calcHours(shift.startTime, shift.endTime);
+              const earned = hrs * Number(shift.rate || 0);
+              return (
+                <div key={shift.id} style={s.shiftCard}>
+                  <div style={s.shiftLeft}>
+                    <div style={s.shiftDate}>{formatDate(shift.date)}</div>
+                    <div style={s.shiftJob(j.color)}><span style={{ marginRight: 4 }}>{j.emoji}</span>{j.label}</div>
+                    <div style={s.shiftTime}>{shift.startTime} → {shift.endTime} · <strong style={{ color: "#ccc" }}>{hrs.toFixed(2)} hrs</strong></div>
+                    <div style={s.shiftEarned}>{formatCurrency(earned)} @ ${Number(shift.rate).toFixed(2)}/hr</div>
+                    {shift.notes && <div style={s.shiftNotes}>{shift.notes}</div>}
+                  </div>
+                  <div style={s.shiftActions}>
+                    <button style={s.iconBtn("#60a5fa")} onClick={() => handleEdit(shift)}>Edit</button>
+                    <button style={s.iconBtn("#f87171")} onClick={() => handleDelete(shift.id)}>Del</button>
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </div>
+      )}
+
+      {view !== "add" && (
+        <button style={s.addBtn} onClick={() => { setView("add"); setEditId(null); setForm(blankForm); }}>＋</button>
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+  </script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js');
+    }
+  </script>
+</body>
+</html>
